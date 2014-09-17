@@ -1,0 +1,162 @@
+---
+title: "Practical Machine Learning"
+author: "Nicholas Lawrence"
+date: "Tuesday, September 16, 2014"
+output: html_document
+---
+```{r echo=FALSE, include=FALSE}
+rm(list=objects())
+library(caret)
+library(utils)
+```
+_Summary_
+--
+This document describes the procedure used to create a model for predicting the manner in which students did their exercise (The classe variable in the data set). The data from this project was obtained from http://groupware.les.inf.puc-rio.br/har. The website also contains several technical documents which were consulted for this project.
+
+After cleansing and splitting the provided data into a training and testing data set, a random forest model with 50 trees provides a cross-validated overall accuracy of 99% on the training data and an overall accuracy of 99% on the hold-out test data set.
+
+Against the prediction assignment data for the course project, the model successfully predicted the correct outcomes for all 20 observations.
+
+_Process_
+--
+The first step was to load the training data and visually examine it (as rows and columns).
+
+```{r, echo=FALSE,warning=FALSE,include=FALSE}
+raw_training <- 
+  read.csv('http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv',
+           stringsAsFactors = FALSE)
+
+```
+
+A quick examination of the data shows that the training data needs a little bit of cleansing before it can be split into a training and testing set. 
+
+** the classe column in the data frame should be a factor
+
+** There are a number of columns that are not useful predictors and can be removed. 
+
+The data is essentially designed for a time-series analysis. Each row contains several time columns and many summary statistic columns. While most rows have a "new window" value of "no" and NA for the values in the summary statistic columns, some rows have a "new window" value of "yes" and summary statistics for all the rows in the window. The num_window column contains a number which indicates which window an observation is in. 
+
+Since predictions are to be made on a single observation, rather than a summary of a window, the summary and window information is not helpful. The time of the observation and window number columns are also not useful as predictors. I removed any column where > 75% of the rows contain an NA value from the model, which includes the summary statistic columns.
+
+X is the row number column or observation identifier. This will not be useful.
+
+user_name is also not a great predictor, since users have each performed the study in very prescribed ways. The intention is clearly not to predict that certain users will also do the procedure incorrectly.
+
+The columns that were not useful predictors were removed from the model.
+  
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+raw_training$classe <- as.factor(raw_training$classe)
+remove_cols <- which(colnames(raw_training) %in% c ('raw_timestamp_part_1', 'raw_timestamp_part_2', 'cvtd_timestamp', 'new_window', 'X', 'user_name', 'num_window'))
+raw_training <- raw_training[, -remove_cols]
+
+#strip columns with na > .75
+raw_training <- raw_training[,
+sapply(colnames(raw_training), 
+       function(x) 
+         sum(is.na(as.numeric(raw_training[,x]))) / nrow(raw_training)) < .25 
+]
+
+```
+
+
+``` {r include = FALSE, echo=FALSE}
+colvar <- sapply(colnames(raw_training), function(nm) var(raw_training[,nm]));
+minvarcol <- which(colvar == min(colvar), arr.ind=TRUE);
+```
+
+The result is `r ncol(raw_training) - 1` predictors, and one response.
+The smallest variance of any column is `r min(colvar)` (for the `r colnames(raw_training)[minvarcol]` column), which is enough to consider that the column may be a predictor. (A variance of NA or 0 would suggest that the column is not useful as a predictor)
+
+*Columns included in the model*
+```{r, echo=FALSE}
+colnames(raw_training)
+```
+
+With the data set cleaned, I split it into a training and test sets.
+75% of the data is used as a training set, and 25% as a test set.
+
+```{r, echo=FALSE,include=FALSE, message=FALSE}
+set.seed(123)
+trainix <- createDataPartition(raw_training$classe, p=.75, list=FALSE)
+training <- raw_training[trainix,]
+testing  <- raw_training[-trainix,]
+```
+
+```{r, echo=FALSE, include=FALSE, message=FALSE}
+
+if (!file.exists(".\\models\\tree_model")) {
+ tree_model <- train(classe~., data=training, method="rpart",  trControl=trainControl(method="repeatedcv", number=10, repeats=5))
+ save(tree_model, file=".\\models\\tree_model")
+} else load(".\\models\\tree_model");
+
+```
+
+A simple model often works best, so a decision tree was first tried. Cross validation was used to determine the quality of the model (as well as the best model parameters). The cross validated accuracy (on the training data) for a decision tree is only `r tree_model$results$Accuracy[1]`.
+
+Next I tried a random forest. 50 trees was chosen after some experimentation, rather than the default 500. A repeated cross-validation was used to determine the best parameters for the model, and to estimate the quality of the fit.
+
+```{r, include=FALSE, echo=FALSE, message=FALSE}
+if (!file.exists(".\\models\\rf50")) {
+ rf <- train(classe~., data=training, method="rf", ntree=50, trControl=trainControl(method="repeatedcv", number=10, repeats=5))
+
+ save(rf, file=".\\models\\rf50")
+ } else load(".\\models\\rf50");
+
+```
+
+The cross-validated overall accuracy of this model (on the training data) is significantly higher, `r rf$results$Accuracy[1]`.
+
+The confusion matrix on the training data also suggests a good fit, but a `r rf$results$Accuracy[1]` overall accuracy may indicate over-fitting.
+
+*Confusion Matrix for training set*
+```{r, echo=FALSE, message=FALSE}
+train_cm <- confusionMatrix(predict(rf), training$classe);
+train_cm$byClass[,1:4];
+```
+
+
+To get an estimate of performance on an unknown test set, I looked at the confusion Matrix for the TEST set that was held out.
+
+*Confusion Matrix for test set*
+```{r, echo=FALSE, message=FALSE}
+test_cm <- confusionMatrix(predict(rf, newdata=testing), testing$classe)
+test_cm$byClass[,1:4];
+```
+
+The overall Accuracy on the test set is `r test_cm$overall['Accuracy']`, which is slightly higher than the cross-validated accuracy when building the model. The model appears to be only slightly over-fitting.
+
+I looked at a plot of the random forest. It can be seen that the accuracy levels out prior to the 50 tree mark that was used to build the model. Increasing the number of trees is unlikely to improve the model.
+
+*Plot of Random Forest*
+```{r, echo=FALSE,fig.align='left'}
+plot(rf$finalModel,  main="Error Rate vs Number of trees")
+legend("topright", legend=colnames(rf$finalModel$err.rate), col=1:6, cex=.8, fill=1:6)
+```
+
+*Submission*
+--
+The final stage in the project was to obtain the test data and create the files for submission. This section of the code is a simple cut and paste from the course submission page, and prediction using the previously created model.
+
+
+```{r, echo=FALSE}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0(".\\submission\\problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+assignment_predictors <- 
+ read.csv('http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv',
+           stringsAsFactors = FALSE);
+
+predictions_prob <- predict(rf, newdata=assignment_predictors, type="prob")
+predictions <- predict(rf, newdata=assignment_predictors)
+pml_write_files(predictions);
+
+```
+
+*Thank You*
+--
+Thank you for the review, and I appreciate any comments you may have!
